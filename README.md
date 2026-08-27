@@ -20,16 +20,99 @@ under test is [`catalogue.sh`](example/agent/catalogue.sh) — a dependency-free
 library-loans CLI with real state, so nothing but rook's own phases costs
 anything.
 
+Every command below was run from a clean `git clone`; the output shown is real.
+
+### 1. Talk to the agent
+
 ```bash
-cd example
-./agent/catalogue.sh borrow b-1     # the agent
-./transport.sh 'catalogue borrow b-1'  # what rook invokes
+git clone https://github.com/lambdapro/rook-eval.git
+cd rook-eval/example
+
+./agent/catalogue.sh search "Le Guin"
+```
+```
+b-1  The Left Hand of Darkness — Ursula K. Le Guin  [available]
+b-3  The Dispossessed — Ursula K. Le Guin  [available]
 ```
 
-Then follow [`example/README.md`](example/README.md) for the full loop —
-`explore` → `profile add` → `generate` → `scenarios list` → `run` → `report`.
+```bash
+./agent/catalogue.sh borrow b-1        # borrowed b-1 — The Left Hand of Darkness
+./agent/catalogue.sh borrow b-1        # refused: already on loan       (exit 1)
+./agent/catalogue.sh borrow b-999      # refused: no such book          (exit 1)
+./agent/catalogue.sh status            # id|title|author|state, per line
+./agent/catalogue.sh reset             # all loans cleared
+```
 
-The example is built to demonstrate the failure modes that actually bite:
+The borrow limit is 2 — the boundary worth testing:
+
+```bash
+./agent/catalogue.sh reset
+./agent/catalogue.sh borrow b-1
+./agent/catalogue.sh borrow b-2
+./agent/catalogue.sh borrow b-3
+```
+```
+refused: borrow limit of 2 reached — return something first        # exit 1
+```
+
+### 2. Run the transport rook will call
+
+```bash
+./agent/catalogue.sh reset
+./transport.sh 'catalogue borrow b-1'    # happy path
+./transport.sh 'catalogue borrow b-1'    # refused — the interesting one
+```
+```
+refused: b-1 is already on loan — nothing changed
+
+===== OBSERVED STATE (added by the transport, not by the agent) =====
+goal_exit_code: 1
+
+--- changed by this goal ---
+NO CHANGE: the goal altered no loan state.
+```
+```bash
+echo $?    # 0 — the TRANSPORT succeeded even though the goal was refused
+```
+
+The agent exited 1; the transport exits 0. rook discards stdout on a non-zero
+exit, so without this every refusal would reach the judge empty and be graded
+"agent never ran". `NO CHANGE` is what makes *"nothing was borrowed"*
+verifiable at all.
+
+### 3. Wire it into rook
+
+```bash
+rook project use <ULID>            # required first — profile add refuses without it
+
+rook explore example/agent         # derive features from CATALOGUE.md   [credits]
+
+# absolute paths — rook spawns argv with no shell
+rook profile add catalogue --command "/bin/bash $(pwd)/transport.sh {{goal}}"
+
+# Windows: bash.exe lives in Git\bin, which is usually NOT on PATH
+rook profile add catalogue \
+  --command 'D:\Git\bin\bash.exe /c/path/to/example/transport.sh {{goal}}'
+
+rook profile test catalogue
+```
+```
+catalogue: answered in 257ms — verified
+```
+
+```bash
+rook profile use catalogue
+rook generate -- "Each goal is ONE catalogue.sh command. Single turn."  # [credits]
+rook scenarios list                # FREE — stop here if it says 0 runnable
+rook run --concurrency 1 --profile catalogue                           # [credits]
+rook report                        # free
+rook ui --local                    # browser viewer, works offline
+```
+
+**[`example/README.md`](example/README.md) has the complete flow** — every step
+with its real output, and what to do when one fails.
+
+The example exists to demonstrate the failure modes that actually bite:
 refusals whose evidence would otherwise be discarded, state a judge cannot see
 from command output alone, and the profile-before-generate ordering rule.
 
