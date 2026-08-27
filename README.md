@@ -156,33 +156,50 @@ Supporting commands: `rook login`, `rook auth status`, `rook whoami`, `rook plan
 
 ```bash
 rook --version
-rook doctor          # CLI, node, workspace, controller reachability, auth, tty
-rook plan            # account, organisation, credit balance
+rook doctor        # version, node, workspace, controller + api reachability,
+                   # identity, auth, project, mode, tty, state
+rook plan          # username, organisation, credit balance
 ```
+
+`rook doctor` is the fastest way to see whether the controller is reachable and
+which project is selected. `state: offline` there means *unsynced*, not
+disconnected — `rook status --json` reports the real `"offline"` boolean.
 
 ### 1. Sign in and pick a project
 
 ```bash
-rook login           # browser flow; needs a TTY
+rook login                     # browser flow; needs a TTY
 rook whoami
 
-rook project                  # list selectable projects
-rook project use <ULID>       # select an existing one
-rook project create <name>    # or make a new one, and select it
+rook project                   # list selectable projects: <ULID>  <name>
+rook project use 01J...        # select an existing one
+rook project create catalogue-eval    # or make a new one, and select it
 ```
+
+A project is required before almost anything else. Without one:
+
+```
+no project selected — run `rook project <id>`
+```
+
+> The hint is wrong — the command is `rook project use <id>`.
+
+If `rook project use` later rejects a ULID that `create` just returned, that
+project was never persisted upstream. See [Troubleshooting](#troubleshooting).
 
 ### 2. Point rook at the codebase
 
 ```bash
-rook explore .
-rook explore <path> -- "free text describing what the agent is"
+rook explore example/agent
+rook explore example/agent -- "a library loans CLI specified in CATALOGUE.md"
 ```
 
-This writes **features** — one per capability it finds. Review them; everything
-downstream is derived from them.
+This writes **features** — one per capability it finds — into
+`.testmuai/rook/projects/<PROJECT>/agents/<AGENT>/features/`. Review them;
+everything downstream is derived from them.
 
 ```bash
-rook agent use <agent-id>     # if it found more than one
+rook agent use catalogue       # only if it found more than one agent
 ```
 
 ### 3. Describe how to reach the agent — DO THIS BEFORE `generate`
@@ -195,74 +212,123 @@ rook agent use <agent-id>     # if it found more than one
 > the profile fixes it because the assumptions are baked into the scenarios.
 
 ```bash
-# From a command line — {{goal}} is where each scenario's goal is substituted
-rook profile add <name> --command 'claude -p "{{goal}}"'
+# A command line — {{goal}} is where each scenario's goal is substituted
+rook profile add catalogue --command "/bin/bash $(pwd)/example/transport.sh {{goal}}"
 
-# Or from a curl (file, or piped on stdin)
-rook profile add <name> --from ./request.curl
+# Windows: bash.exe lives in Git\bin, which is usually NOT on PATH
+rook profile add catalogue \
+  --command 'D:\Git\bin\bash.exe /c/path/to/example/transport.sh {{goal}}'
 
-rook profile test <name>      # MUST answer, or it stays unverified and unusable
-rook profile show <name>
-rook profile use <name>
+# Or from a curl (a file, or piped on stdin)
+rook profile add catalogue --from ./request.curl
 ```
 
-`--command` **must** contain `{{goal}}`. rook spawns argv directly with no
-shell, so `{{goal}}` stays one token — do not wrap it in quotes, or the quote
-characters are passed to your agent literally.
+```bash
+rook profile test catalogue    # MUST answer, or it stays unverified and unusable
+```
+```
+catalogue: answered in 257ms — verified
+  catalogue transport ready; goal was not a catalogue command: Say hello and nothing else.
+  rook profile use catalogue    to make it active
+```
+
+```bash
+rook profile use catalogue     # make it the active profile
+rook profile show catalogue    # what it sends, references unexpanded
+```
+
+`--command` **must** contain `{{goal}}`, or rook refuses it:
+
+```
+--command has no {{goal}} — every scenario would send the same fixed call
+```
+
+Do not wrap `{{goal}}` in quotes. rook spawns argv directly with no shell, so it
+already stays one token — quoting it passes literal quote characters to your
+agent.
 
 ### 4. Write scenarios
 
 ```bash
 rook generate
 rook generate --total 20 --class functional,adversarial
-rook generate --force -- "constraints the scenarios must respect"
+rook generate --category boundary,negative,state_context
+
+rook generate -- "Each goal is ONE catalogue.sh command. Single turn. Assert on \
+stdout and on the OBSERVED STATE block the transport appends."
+
+rook generate --force -- "..."    # rewrite everything, whatever the pins say
 ```
 
-Use the trailing instruction to tell the planner what your transport can
-actually do. It is the cheapest lever you have.
+The trailing instruction after `--` is how you tell the planner what your
+transport can actually do. It is the cheapest lever you have — far cheaper than
+discovering at run time that nothing is runnable.
 
 ### 5. Check runnability — free, and do it every time
 
 ```bash
 rook scenarios list
 ```
+```
+12 scenario(s) · 9 runnable against catalogue
 
-Reports `N runnable against <profile>` and, for anything unrunnable, exactly
-why. **If this says `0 runnable`, stop.** Running would only pay for planning
-and produce skips. Fix the profile or regenerate first.
+  SC-001  Refuses to borrow a book already on loan
+    adversarial · negative · F-002 · 3 criteria
+✗ SC-004  Holds a reservation across two requests
+    adversarial · state_context · F-002 · 3 criteria · multi-turn
+    cannot run: it needs several turns and catalogue carries no conversation handle
+```
+
+**If this says `0 runnable`, stop.** Running would pay for the planning phase and
+produce nothing but skips.
 
 ```bash
-rook scenarios exclude SC-001 SC-002    # keep on disk, leave out of runs
-rook scenarios include SC-001
-rook scenarios delete SC-003
+rook scenarios exclude SC-004 SC-007    # keep on disk, leave out of runs
+rook scenarios include SC-004
+rook scenarios delete SC-007            # permanent
 ```
 
 ### 6. Run
 
 ```bash
-rook run --concurrency 1
-rook run --only SC-013,SC-015
-rook run --class adversarial --category jailbreak,prompt_injection
-rook run --test                          # keep out of the project timeline
-rook run --profile <name> -- "what the transport returns"
+./example/agent/catalogue.sh reset      # known starting state
+
+rook run --concurrency 1 --profile catalogue
+rook run --only SC-001,SC-002
+rook run --class adversarial --category negative,boundary
+rook run --test                         # keep out of the project timeline
+
+rook run --profile catalogue -- "The transport appends an OBSERVED STATE block: \
+goal_exit_code, the full catalogue with each book's loan state, and a diff of \
+what changed. Treat loan state as observable."
 ```
 
 Useful flags: `--tag`, `--name`, `--resume <id>`, `--rca`, `--json`,
 `--verbose`, `--allow 'bash(npm test)'`.
 
 Runnability is re-decided **on every run** by a model reading each scenario
-against the profile. It cannot know anything your transport does that the
-profile does not state — so say it in the trailing instruction.
+against the profile. It cannot know anything your transport does that the profile
+does not state — so say it in the trailing instruction.
 
 ### 7. Read the results
 
 ```bash
-rook report                  # newest run
-rook report <RUN_ID>
-rook report --rca            # explains failure clusters — costs credits
-rook ui --local              # browser viewer, works fully offline
-rook ui --local --no-open    # print the URL instead
-rook status                  # where this machine stands
+rook report                    # newest run — free
+rook report 01M1...            # a specific run
+rook report --rca              # explains failure clusters — costs credits
+rook ui --local                # browser viewer, works fully offline
+rook ui --local --no-open      # print the URL instead
+rook status                    # where this machine stands
+rook status --json             # machine-readable, incl. the real offline flag
+```
+
+`rook report` totals look like this:
+
+```
+2 of 2 executed · 100% passed of 1 decided
+  1 passed · 0 failed
+  1 could not be decided from the evidence
+  17 could not run against this profile
 ```
 
 Everything is also on disk:
@@ -271,29 +337,36 @@ Everything is also on disk:
 .testmuai/rook/projects/<PROJECT>/agents/<AGENT>/
 ├── features/     F-001.yaml …           what the agent is meant to do
 ├── scenarios/    SC-001.yaml …          goal + acceptance criteria
-├── profiles/     <name>.yaml            how the agent is invoked
+├── profiles/     catalogue.yaml         how the agent is invoked
 └── runs/<RUN_ID>/
     ├── run.yaml      included/skipped per scenario, with the planner's reason
     ├── report.yaml   totals, credits, quality metrics, failure clusters
-    └── scenarios/SC-013/
+    └── scenarios/SC-001/
         ├── request.json   exact goal sent
         ├── response.json  raw output, exit_code, latency, transcript
         └── verdict.yaml   per-criterion Pass/Fail with quoted evidence
 ```
 
-A run directory with no `report.yaml` never finished.
+A run directory with no `report.yaml` never finished. One whose `scenarios/`
+holds no `request.json` never reached your agent at all.
 
-**Read `verdict.yaml` and `response.json` before reaching for `--rca`.** They
-are free and factual; the RCA is a model's interpretation and costs credits.
+**Read `verdict.yaml` and `response.json` before reaching for `--rca`.** They are
+free and factual; the RCA is a model's interpretation, costs credits, and can be
+wrong about a cause the raw files state plainly.
 
 ### 8. Record it upstream
 
 ```bash
-rook sync                    # every agent, as one write
-rook runs sync               # push finished runs that still owe upstream
+rook sync                      # every agent, as one write
+rook runs sync                 # push finished runs that still owe upstream
+```
+```
+catalogue: 4 feature(s), 12 scenario(s)
 ```
 
-Nothing leaves your machine until you do this.
+Nothing leaves your machine until you do this. If it fails, see
+[Troubleshooting](#troubleshooting) — and note that `rook run --test` keeps
+working regardless, producing full verdicts and evidence locally.
 
 ---
 
@@ -340,6 +413,25 @@ instruction.
 | `unrunnable: requires state inspection` | planner does not know state is observable | emit state, and say so in the run instruction |
 | run dir with no `report.yaml` | run never finished | check whether it could register upstream |
 | `this is a bug in rook (client_bug)` | a server-side conflict reported badly | try a different value (e.g. a unique project name) |
+| `no project selected` | no project chosen for this workspace | `rook project use <id>` — **not** `rook project <id>`, despite the hint |
+| `no project <ULID>` for a project `create` just returned | it was never persisted upstream | select a project `project use` accepts; until then use `rook run --test` |
+| `could not record the sync` | the selected project does not exist upstream | same as above — the project, not sync, is the problem |
+
+### When sync will not work
+
+If `rook project use` rejects a ULID that `rook project create` just returned,
+that project is a phantom: it was reported as created but never persisted. Three
+symptoms follow, and they are all the same bug:
+
+- `rook sync` → `could not record the sync`
+- a normal `rook run` dies before invoking the agent — its run directory has no
+  `report.yaml`, and no `request.json` under `scenarios/`
+- `rook status` keeps saying `never synced`
+
+**`rook run --test` is unaffected** and gives you the complete local loop —
+execution, judging, verdicts and evidence. Only the project-timeline entry is
+skipped, which sync cannot record anyway. Use it to keep working, and select a
+project that `rook project use` genuinely accepts before relying on `sync`.
 
 Platform-specific setup and gotchas: [WINDOWS.md](WINDOWS.md).
 
