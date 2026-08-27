@@ -1,3 +1,6 @@
 # rook workspace state — runs, evidence, credentials-adjacent metadata.
 # This repo documents how to use rook; it is not a place to commit results.
 .testmuai/
+
+# catalogue example loan state
+example/agent/.state

@@ -13,6 +13,28 @@ Everything lands on disk as plain YAML and JSON you can diff and edit.
 
 ---
 
+## Start here: a runnable example
+
+[`example/`](example/) is a complete evaluation you can actually run. The agent
+under test is [`catalogue.sh`](example/agent/catalogue.sh) — a dependency-free
+library-loans CLI with real state, so nothing but rook's own phases costs
+anything.
+
+```bash
+cd example
+./agent/catalogue.sh borrow b-1     # the agent
+./transport.sh 'catalogue borrow b-1'  # what rook invokes
+```
+
+Then follow [`example/README.md`](example/README.md) for the full loop —
+`explore` → `profile add` → `generate` → `scenarios list` → `run` → `report`.
+
+The example is built to demonstrate the failure modes that actually bite:
+refusals whose evidence would otherwise be discarded, state a judge cannot see
+from command output alone, and the profile-before-generate ordering rule.
+
+---
+
 ## What rook can do
 
 | Phase | Command | What it produces |

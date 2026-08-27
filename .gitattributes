@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings. A CRLF checkout breaks them with
+# "bad interpreter: /usr/bin/env bash^M" — including under Git Bash on Windows.
+*.sh text eol=lf
+*.md text
