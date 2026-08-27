@@ -172,8 +172,11 @@ Absolute paths only: rook spawns argv with no shell.
 rook profile add catalogue --command "/bin/bash $(pwd)/transport.sh {{goal}}"
 
 # Windows (Git Bash) — bash.exe lives in Git\bin, which is usually NOT on PATH
+# Double quotes are deliberate: they keep the backslashes literal AND let
+# $(pwd) expand as you type. Do not paste a made-up path here - an
+# unsubstituted one is stored verbatim and fails later with exit 127.
 rook profile add catalogue \
-  --command 'D:\Git\bin\bash.exe /c/path/to/example/transport.sh {{goal}}'
+  --command "D:\Git\bin\bash.exe $(pwd)/transport.sh {{goal}}"
 ```
 
 Verify it answers:

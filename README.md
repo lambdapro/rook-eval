@@ -91,8 +91,11 @@ rook explore example/agent         # derive features from CATALOGUE.md   [credit
 rook profile add catalogue --command "/bin/bash $(pwd)/transport.sh {{goal}}"
 
 # Windows: bash.exe lives in Git\bin, which is usually NOT on PATH
+# Double quotes are deliberate: they keep the backslashes literal AND let
+# $(pwd) expand as you type. Do not paste a made-up path here - an
+# unsubstituted one is stored verbatim and fails later with exit 127.
 rook profile add catalogue \
-  --command 'D:\Git\bin\bash.exe /c/path/to/example/transport.sh {{goal}}'
+  --command "D:\Git\bin\bash.exe $(pwd)/transport.sh {{goal}}"
 
 rook profile test catalogue
 ```
@@ -202,6 +205,49 @@ everything downstream is derived from them.
 rook agent use catalogue       # only if it found more than one agent
 ```
 
+#### If it finds nothing, the cache is stale
+
+```
+nothing on disk moved — no scan needed
+0 analysed, 0 unchanged, 0.00 credits
+```
+
+`explore` hashes the tree into `.testmuai/rook/cache/__project__/index.json`
+and skips the scan when nothing changed. That message is correct after a real
+scan — but `0 analysed, 0 unchanged` is zero on *both* sides, which no
+up-to-date scan ever reports. It means the file index was written without any
+agent being derived, so every later `explore` short-circuits against it and
+finds nothing.
+
+Confirm it before spending credits — this is free:
+
+```bash
+ls .testmuai/rook/projects/<PROJECT>/agents/     # missing => nothing derived
+```
+
+If `agents/` is absent, clear the cache the supported way — re-derive
+whatever the hashes say:
+
+```bash
+rook explore example/agent --force --verbose     # [credits]
+```
+
+`--verbose` prints each subagent call and the running credit total, so you can
+watch `find_agents` actually fire instead of inferring it from a summary line.
+Deleting `.testmuai/rook/cache/` by hand works too, but `--force` is scoped to
+this path and leaves the rest of the project state alone.
+
+A `--force` run may also decline a tool call it will not make unattended:
+
+```
+! bash(type example\agent\CATALOGUE.md) was chosen by a model,
+  not asked for, and there is nobody to confirm it. Pass --allow 'bash(...)'
+  to authorise it for this run.
+```
+
+It is not fatal — the run continues and reads the file another way. Only add
+`--allow` if the same call keeps blocking real progress.
+
 ### 3. Describe how to reach the agent — DO THIS BEFORE `generate`
 
 > **This is the single most important ordering rule.** rook's own guide lists
@@ -216,8 +262,11 @@ rook agent use catalogue       # only if it found more than one agent
 rook profile add catalogue --command "/bin/bash $(pwd)/example/transport.sh {{goal}}"
 
 # Windows: bash.exe lives in Git\bin, which is usually NOT on PATH
+# Double quotes are deliberate: they keep the backslashes literal AND let
+# $(pwd) expand as you type. Do not paste a made-up path here - an
+# unsubstituted one is stored verbatim and fails later with exit 127.
 rook profile add catalogue \
-  --command 'D:\Git\bin\bash.exe /c/path/to/example/transport.sh {{goal}}'
+  --command "D:\Git\bin\bash.exe $(pwd)/transport.sh {{goal}}"
 
 # Or from a curl (a file, or piped on stdin)
 rook profile add catalogue --from ./request.curl
@@ -264,19 +313,32 @@ The trailing instruction after `--` is how you tell the planner what your
 transport can actually do. It is the cheapest lever you have — far cheaper than
 discovering at run time that nothing is runnable.
 
+**Treat it as mandatory.** A bare `rook generate` against this example produced
+16 scenarios of which **15 could not run** — every one asserting that a
+`search`/`borrow`/`return` *tool call* occurred, which a single-shot CLI can
+never expose:
+
+```
+cannot run: it asserts what search did and catalogue cannot observe tool calls
+```
+
+The ordering rule above was satisfied — the profile was active and verified
+before `generate` ran. Ordering alone does not save you. The profile says how
+the agent is reached; only the instruction says what its answers can show.
+
 ### 5. Check runnability — free, and do it every time
 
 ```bash
 rook scenarios list
 ```
 ```
-12 scenario(s) · 9 runnable against catalogue
+16 scenario(s) · 1 runnable against catalogue
 
-  SC-001  Refuses to borrow a book already on loan
-    adversarial · negative · F-002 · 3 criteria
-✗ SC-004  Holds a reservation across two requests
-    adversarial · state_context · F-002 · 3 criteria · multi-turn
-    cannot run: it needs several turns and catalogue carries no conversation handle
+✗ SC-001  Search catalogue books by author substring case-insensitively
+    functional · happy_path · F-001 · 3 criteria
+    cannot run: it asserts what search did and catalogue cannot observe tool calls
+  SC-007  Search reflects on loan state after successful borrow operation
+    functional · state_context · F-001 · 3 criteria
 ```
 
 **If this says `0 runnable`, stop.** Running would pay for the planning phase and
@@ -294,7 +356,7 @@ rook scenarios delete SC-007            # permanent
 ./example/agent/catalogue.sh reset      # known starting state
 
 rook run --concurrency 1 --profile catalogue
-rook run --only SC-001,SC-002
+rook run --only SC-007
 rook run --class adversarial --category negative,boundary
 rook run --test                         # keep out of the project timeline
 
@@ -305,6 +367,21 @@ what changed. Treat loan state as observable."
 
 Useful flags: `--tag`, `--name`, `--resume <id>`, `--rca`, `--json`,
 `--verbose`, `--allow 'bash(npm test)'`.
+
+On a project that was never synced, `rook run` plans and then stops without
+executing anything:
+
+```
+  the plan is at ...runs/01M12NWVMV4W51V0210ZG2VVWM/run.yaml
+this agent has never been synced upstream
+  rook sync          record it, then run
+  rook run --test    or run locally, recording nothing
+not synced
+```
+
+The plan was still written and the planning phase was still billed. `rook run
+--test` completes the identical loop — execution, judging, verdicts, evidence —
+and skips only the project-timeline entry.
 
 Runnability is re-decided **on every run** by a model reading each scenario
 against the profile. It cannot know anything your transport does that the profile
@@ -325,10 +402,12 @@ rook status --json             # machine-readable, incl. the real offline flag
 `rook report` totals look like this:
 
 ```
-2 of 2 executed · 100% passed of 1 decided
-  1 passed · 0 failed
-  1 could not be decided from the evidence
-  17 could not run against this profile
+1 of 1 executed · 0% passed of 1 decided
+  0 passed · 1 failed
+  0 could not be decided from the evidence
+  15 could not run against this profile
+  5.51 credits · 6.5s wall clock
+  agent latency: 161ms median · 1 turns
 ```
 
 Everything is also on disk:
@@ -374,7 +453,7 @@ working regardless, producing full verdicts and evidence locally.
 
 Scenario `goal` fields are whatever `generate` decided they should be — often a
 literal command. The profile's job is to turn a goal into a real invocation and
-return text the judge can grade. Three rules earn their keep:
+return text the judge can grade. Four rules earn their keep:
 
 **Return evidence even on failure.** rook discards stdout when the process exits
 non-zero, so a failing command yields an empty response and an
@@ -395,7 +474,25 @@ cannot show. Snapshot the relevant state before and after the goal and append it
 under a clear heading, then tell the planner it exists via the `rook run`
 instruction.
 
-[`scripts/agent.sh`](scripts/agent.sh) is a worked example doing all three.
+**Match the goals `generate` actually emits.** A transport that guards against
+non-command input — so the `profile test` prose probe gets an answer — must let
+real goals through that same guard. This example matched only a `catalogue ...`
+prefix while `generate` wrote bare subcommands like `search Left Hand`, so every
+goal fell into the probe branch and the agent was never invoked. Nothing looked
+broken: the transport exited 0 and returned a fluent sentence, so the judge
+graded the *reply* and reported
+
+```
+possible_evasion: The agent falsely reframed the valid requested command as not
+being a catalogue command
+```
+
+— an evasion the agent never committed, because the agent never ran. This is the
+worst failure mode in the set: it produces confident, plausible verdicts about
+code that was never executed. Exercise the guard with a real scenario goal, not
+only with `profile test`.
+
+[`scripts/agent.sh`](scripts/agent.sh) is a worked example doing all of these.
 
 ---
 
@@ -408,11 +505,14 @@ instruction.
 | `spawn <cmd> ENOENT` | rook spawns argv with no shell | use an absolute path, or wrap in a shell script |
 | profile `saved unverified` | it did not answer `profile test` | make the transport reply to a prose probe too |
 | `0 runnable against <profile>` | scenarios written before the profile existed | `rook generate --force` with the profile active |
+| `exited 127: ... No such file or directory` on `profile test` | a placeholder path was pasted into `--command` and stored verbatim | re-add with a real path; check `profiles/<name>.yaml` `invoke.argv` |
 | verdict `agent_never_ran`, `exited 127` | interpreter path went stale mid-run | pin absolute interpreter paths in the transport |
 | valid output but `"output": ""` | non-zero exit made rook drop stdout | exit 0, report `goal_exit_code` in-band |
 | `unrunnable: requires state inspection` | planner does not know state is observable | emit state, and say so in the run instruction |
+| `run_planner did not answer` | a generated scenario holds a degenerate repetition loop (a `why` of thousands of repeated words) that the planner chokes on | `ls -S scenarios/` — the corrupt one is wildly the largest; trim the field and re-run |
 | run dir with no `report.yaml` | run never finished | check whether it could register upstream |
 | `this is a bug in rook (client_bug)` | a server-side conflict reported badly | try a different value (e.g. a unique project name) |
+| `nothing on disk moved`, `0 analysed, 0 unchanged` | file-hash cache written without any agent being derived | `rook explore <path> --force` |
 | `no project selected` | no project chosen for this workspace | `rook project use <id>` — **not** `rook project <id>`, despite the hint |
 | `no project <ULID>` for a project `create` just returned | it was never persisted upstream | select a project `project use` accepts; until then use `rook run --test` |
 | `could not record the sync` | the selected project does not exist upstream | same as above — the project, not sync, is the problem |

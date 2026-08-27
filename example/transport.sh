@@ -25,6 +25,11 @@ goal=${1:-}
 # profile verifies, instead of failing with "command not found".
 case "$goal" in
   catalogue.sh*|catalogue*) ;;
+  # Bare subcommands too: rook generates goals like `search Left Hand`,
+  # and matching only a `catalogue` prefix would answer the probe reply
+  # instead of running the agent — the judge then grades an evasion the
+  # agent never committed.
+  search*|borrow*|return*|status*|reset*) ;;
   *)
     printf 'catalogue transport ready; goal was not a catalogue command: %s\n' "$goal"
     exit 0
